@@ -96,6 +96,9 @@ static const FR_NAME_NUMBER header_names[] = {
 	{ "{ssha384}",		PW_SSHA2_384_PASSWORD },
 	{ "{ssha512}",		PW_SSHA2_512_PASSWORD },
 	{ "{x-pbkdf2}",		PW_PBKDF2_PASSWORD },
+	{ "{pbkdf2-sha1}",	PW_PBKDF2_389DS_PASSWORD },
+	{ "{pbkdf2-sha256}",	PW_PBKDF2_389DS_PASSWORD },
+	{ "{pbkdf2-sha512}",	PW_PBKDF2_389DS_PASSWORD },
 #endif
 	{ "{sha}",		PW_SHA_PASSWORD },
 	{ "{ssha}",		PW_SSHA_PASSWORD },
@@ -285,8 +288,13 @@ redo:
 		 */
 		new = fr_pair_afrom_num(request, attr, 0);
 		if (new->da->type == PW_TYPE_OCTETS) {
-			fr_pair_value_memcpy(new, (uint8_t const *) q + 1, (len - hlen) + 1);
-			new->vp_length = (len - hlen);	/* lie about the length */
+			if (attr != PW_PBKDF2_389DS_PASSWORD) {
+				fr_pair_value_memcpy(new, (uint8_t const *) q + 1, (len - hlen) + 1);
+				new->vp_length = (len - hlen);	/* lie about the length */
+			} else {
+				fr_pair_value_memcpy(new, (uint8_t const *) vp->vp_strvalue, vp->vp_length);
+				new->vp_length = vp->vp_length;
+			}
 		} else {
 			fr_pair_value_strcpy(new, q + 1);
 		}
@@ -1143,6 +1151,39 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_pbkdf2(UNUSED rlm_pap_t *inst, REQU
 
 	return RLM_MODULE_INVALID;
 }
+
+static rlm_rcode_t CC_HINT(nonnull) pap_auth_pbkdf2_389ds(UNUSED rlm_pap_t *inst, REQUEST *request, VALUE_PAIR *password)
+{
+	uint8_t const *p = password->vp_octets, *q, *end = p + password->vp_length;
+
+	rad_assert(request->password != NULL);
+	rad_assert(request->password->da->attr == PW_USER_PASSWORD);
+
+	if (end - p < 2) {
+		REDEBUG("PBKDF2-389DS-Password too short");
+		return RLM_MODULE_INVALID;
+	}
+
+	if (*p != '{') {
+		REDEBUG("PBKDF2-389DS-Password has invalid header");
+		return RLM_MODULE_INVALID;
+	}
+
+	q = memchr(p, '}', end - p);
+	if (!q || q - p < 2) {
+		REDEBUG("Password.PBKDF2-389DS has invalid header");
+		return RLM_MODULE_INVALID;
+	}
+
+	if ((size_t)(q - p) > sizeof("{PBKDF2-") && strncasecmp((char const *) p, "{PBKDF2-", 8) == 0) {
+		p += sizeof("{PBKDF2-") - 1;
+		return pap_auth_pbkdf2_parse(request, p, end - p,
+					     pbkdf2_passlib_names, '}', '$', '$', false, request->password);
+	}
+
+	REDEBUG("Can't determine format of Password.PBKDF2-389DS");
+	return RLM_MODULE_INVALID;
+}
 #endif
 
 static rlm_rcode_t CC_HINT(nonnull) pap_auth_nt(rlm_pap_t *inst, REQUEST *request, VALUE_PAIR *vp)
@@ -1343,6 +1384,10 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(void *instance, REQUEST *re
 
 		case PW_PBKDF2_PASSWORD:
 			auth_func = &pap_auth_pbkdf2;
+			break;
+
+		case PW_PBKDF2_389DS_PASSWORD:
+			auth_func = &pap_auth_pbkdf2_389ds;
 			break;
 #endif
 
